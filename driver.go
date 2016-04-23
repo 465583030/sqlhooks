@@ -18,45 +18,38 @@ func convertArgs(args []driver.Value) []interface{} {
 // Hooks contains hook functions for sql operations
 // Returned func() will be executed after statements have completed
 // ID will be the same within the same transaction
-type Hooks struct {
-	Exec     func(string, ...interface{}) func()
-	Query    func(string, ...interface{}) func()
-	Begin    func(id string)
-	Commit   func(id string)
-	Rollback func(id string)
+type Hooks interface {
+	Exec(string, ...interface{}) func()
+	Query(string, ...interface{}) func()
+	Begin(id string)
+	Commit(id string)
+	Rollback(id string)
 }
 
-func (h *Hooks) query(query string, args []driver.Value) func() {
-	if hook := h.Query; hook != nil {
-		fn := hook(query, convertArgs(args)...)
-		if fn != nil {
-			return fn
-		}
+func query(h Hooks, query string, args []driver.Value) func() {
+	fn := h.Query(query, convertArgs(args)...)
+	if fn != nil {
+		return fn
 	}
 	return func() {}
 }
 
-func (h *Hooks) exec(query string, args []driver.Value) func() {
-	if hook := h.Exec; hook != nil {
-		fn := hook(query, convertArgs(args)...)
-		if fn != nil {
-			return fn
-		}
+func exec(h Hooks, query string, args []driver.Value) func() {
+	fn := h.Exec(query, convertArgs(args)...)
+	if fn != nil {
+		return fn
 	}
 	return func() {}
 }
 
 type tx struct {
 	driver.Tx
-	hooks *Hooks
+	hooks Hooks
 	id    string
 }
 
 func (t tx) Commit() error {
-	if hook := t.hooks.Commit; hook != nil {
-		hook(t.id)
-	}
-
+	t.hooks.Commit(t.id)
 	return t.Tx.Commit()
 }
 
@@ -71,7 +64,7 @@ func (t tx) Rollback() error {
 type stmt struct {
 	driver.Stmt
 	query string
-	hooks *Hooks
+	hooks Hooks
 }
 
 func (s stmt) Close() error {
@@ -79,7 +72,7 @@ func (s stmt) Close() error {
 }
 
 func (s stmt) Exec(args []driver.Value) (res driver.Result, err error) {
-	defer s.hooks.exec(s.query, args)()
+	defer exec(s.hooks, s.query, args)()
 	return s.Stmt.Exec(args)
 }
 
@@ -88,29 +81,29 @@ func (s stmt) NumInput() int {
 }
 
 func (s stmt) Query(args []driver.Value) (driver.Rows, error) {
-	defer s.hooks.query(s.query, args)()
+	defer query(s.hooks, s.query, args)()
 	return s.Stmt.Query(args)
 }
 
 type conn struct {
 	driver.Conn
-	hooks *Hooks
+	hooks Hooks
 }
 
-func (c conn) Query(query string, args []driver.Value) (driver.Rows, error) {
+func (c conn) Query(_query string, args []driver.Value) (driver.Rows, error) {
 	if queryer, ok := c.Conn.(driver.Queryer); ok {
-		defer c.hooks.query(query, args)()
-		return queryer.Query(query, args)
+		defer query(c.hooks, _query, args)()
+		return queryer.Query(_query, args)
 	}
 
 	// Not implemented by underlying driver
 	return nil, driver.ErrSkip
 }
 
-func (c conn) Exec(query string, args []driver.Value) (driver.Result, error) {
+func (c conn) Exec(_query string, args []driver.Value) (driver.Result, error) {
 	if execer, ok := c.Conn.(driver.Execer); ok {
-		defer c.hooks.exec(query, args)()
-		return execer.Exec(query, args)
+		defer exec(c.hooks, _query, args)()
+		return execer.Exec(_query, args)
 	}
 
 	// Not implemented by underlying driver
@@ -139,12 +132,12 @@ func (c conn) Begin() (driver.Tx, error) {
 type Driver struct {
 	driver driver.Driver
 	name   string
-	hooks  *Hooks
+	hooks  Hooks
 }
 
 // NewDriver will create a Proxy Driver with defined Hooks
 // name is the underlying driver name
-func NewDriver(name string, hooks *Hooks) Driver {
+func NewDriver(name string, hooks Hooks) Driver {
 	return Driver{name: name, hooks: hooks}
 }
 

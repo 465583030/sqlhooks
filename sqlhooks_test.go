@@ -8,7 +8,47 @@ import (
 	"time"
 )
 
-func openDBWithHooks(t *testing.T, hooks *Hooks) *sql.DB {
+type hooks struct {
+	exec     func(string, ...interface{}) func()
+	query    func(string, ...interface{}) func()
+	begin    func(id string)
+	commit   func(id string)
+	rollback func(id string)
+}
+
+func (h *hooks) Exec(q string, a ...interface{}) func() {
+	if h.exec == nil {
+		return func() {}
+	}
+	return h.exec(q, a...)
+}
+
+func (h *hooks) Query(q string, a ...interface{}) func() {
+	if h.query == nil {
+		return func() {}
+	}
+	return h.query(q, a...)
+}
+
+func (h *hooks) Begin(id string) {
+	if h.begin != nil {
+		h.begin(id)
+	}
+}
+
+func (h *hooks) Commit(id string) {
+	if h.commit != nil {
+		h.commit(id)
+	}
+}
+
+func (h *hooks) Rollback(id string) {
+	if h.rollback != nil {
+		h.rollback(id)
+	}
+}
+
+func openDBWithHooks(t *testing.T, hooks Hooks) *sql.DB {
 	// First, we connect directly using `test` driver
 	if db, err := sql.Open("test", "db"); err != nil {
 		t.Fatalf("sql.Open: %v", err)
@@ -80,7 +120,7 @@ func TestHooks(t *testing.T) {
 				done = true
 			}
 		}
-		db := openDBWithHooks(t, &Hooks{Query: assert, Exec: assert})
+		db := openDBWithHooks(t, &hooks{query: assert, exec: assert})
 
 		switch test.op {
 		case "query":
@@ -139,7 +179,7 @@ func TestHooks(t *testing.T) {
 }
 
 func TestEmptyHooks(t *testing.T) {
-	db := openDBWithHooks(t, &Hooks{})
+	db := openDBWithHooks(t, &hooks{})
 
 	if _, err := db.Exec("INSERT|t|f1=?", "foo"); err != nil {
 		t.Fatalf("Exec: %v\n", err)
@@ -151,7 +191,7 @@ func TestEmptyHooks(t *testing.T) {
 }
 
 func TestCreateInsertAndSelect(t *testing.T) {
-	db := openDBWithHooks(t, &Hooks{})
+	db := openDBWithHooks(t, &hooks{})
 
 	db.Exec("INSERT|t|f1=?,f2=?", "a", "1")
 	db.Exec("INSERT|t|f1=?,f2=?", "b", "2")
@@ -184,14 +224,14 @@ func TestTXs(t *testing.T) {
 			end   string
 		}{}
 
-		db := openDBWithHooks(t, &Hooks{
-			Begin: func(id string) {
+		db := openDBWithHooks(t, &hooks{
+			begin: func(id string) {
 				ids.begin = id
 			},
-			Commit: func(id string) {
+			commit: func(id string) {
 				ids.end = id
 			},
-			Rollback: func(id string) {
+			rollback: func(id string) {
 				ids.end = id
 			},
 		})
